@@ -81,11 +81,11 @@ var invalidHTTPClientConfigs = []struct {
 	},
 	{
 		httpClientConfigFile: "testdata/http.conf.basic-auth.too-much.bad.yaml",
-		errMsg:               "at most one of basic_auth password & password_file must be configured",
+		errMsg:               "at most one of basic_auth password, password_file & password_ref must be configured",
 	},
 	{
 		httpClientConfigFile: "testdata/http.conf.basic-auth.bad-username.yaml",
-		errMsg:               "at most one of basic_auth username & username_file must be configured",
+		errMsg:               "at most one of basic_auth username, username_file & username_ref must be configured",
 	},
 	{
 		httpClientConfigFile: "testdata/http.conf.mix-bearer-and-creds.bad.yaml",
@@ -109,7 +109,7 @@ var invalidHTTPClientConfigs = []struct {
 	},
 	{
 		httpClientConfigFile: "testdata/http.conf.oauth2-secret-and-file-set.bad.yml",
-		errMsg:               "at most one of oauth2 client_secret & client_secret_file must be configured",
+		errMsg:               "at most one of oauth2 client_secret, client_secret_file & client_secret_ref must be configured",
 	},
 	{
 		httpClientConfigFile: "testdata/http.conf.oauth2-no-client-id.bad.yaml",
@@ -851,7 +851,7 @@ func TestTLSConfigInvalidCA(t *testing.T) {
 				KeyFile:            ClientKeyNoPassPath,
 				ServerName:         "",
 				InsecureSkipVerify: false},
-			errorMessage: "at most one of cert and cert_file must be configured",
+			errorMessage: "at most one of cert, cert_file & cert_ref must be configured",
 		},
 		{
 			configTLSConfig: TLSConfig{
@@ -892,7 +892,7 @@ func TestBasicAuthNoPassword(t *testing.T) {
 		t.Fatalf("Error casting to basic auth transport, %v", client.Transport)
 	}
 
-	if username, _ := rt.username.fetch(); username != "user" {
+	if username, _ := rt.username.fetch(context.Background()); username != "user" {
 		t.Errorf("Bad HTTP client username: %s", username)
 	}
 	if rt.password != nil {
@@ -918,7 +918,7 @@ func TestBasicAuthNoUsername(t *testing.T) {
 	if rt.username != nil {
 		t.Errorf("Got unexpected username")
 	}
-	if password, _ := rt.password.fetch(); password != "secret" {
+	if password, _ := rt.password.fetch(context.Background()); password != "secret" {
 		t.Errorf("Unexpected HTTP client password: %s", password)
 	}
 }
@@ -938,11 +938,81 @@ func TestBasicAuthPasswordFile(t *testing.T) {
 		t.Fatalf("Error casting to basic auth transport, %v", client.Transport)
 	}
 
-	if username, _ := rt.username.fetch(); username != "user" {
+	if username, _ := rt.username.fetch(context.Background()); username != "user" {
 		t.Errorf("Bad HTTP client username: %s", username)
 	}
-	if password, _ := rt.password.fetch(); password != "foobar" {
+	if password, _ := rt.password.fetch(context.Background()); password != "foobar" {
 		t.Errorf("Bad HTTP client password: %s", password)
+	}
+}
+
+type secretManager struct {
+	data map[string]string
+}
+
+func (m *secretManager) Fetch(ctx context.Context, secretRef string) (string, error) {
+	secretData, ok := m.data[secretRef]
+	if !ok {
+		return "", fmt.Errorf("unknown secret %s", secretRef)
+	}
+	return secretData, nil
+}
+
+func TestBasicAuthSecretManager(t *testing.T) {
+	cfg, _, err := LoadHTTPConfigFile("testdata/http.conf.basic-auth.ref.yaml")
+	if err != nil {
+		t.Fatalf("Error loading HTTP client config: %v", err)
+	}
+	manager := secretManager{
+		data: map[string]string{
+			"admin": "user",
+			"pass":  "foobar",
+		},
+	}
+	client, err := NewClientFromConfig(*cfg, "test", WithSecretManager(&manager))
+	if err != nil {
+		t.Fatalf("Error creating HTTP Client: %v", err)
+	}
+
+	rt, ok := client.Transport.(*basicAuthRoundTripper)
+	if !ok {
+		t.Fatalf("Error casting to basic auth transport, %v", client.Transport)
+	}
+
+	if username, _ := rt.username.fetch(context.Background()); username != "user" {
+		t.Errorf("Bad HTTP client username: %s", username)
+	}
+	if password, _ := rt.password.fetch(context.Background()); password != "foobar" {
+		t.Errorf("Bad HTTP client password: %s", password)
+	}
+}
+
+func TestBasicAuthSecretManagerNotFound(t *testing.T) {
+	cfg, _, err := LoadHTTPConfigFile("testdata/http.conf.basic-auth.ref.yaml")
+	if err != nil {
+		t.Fatalf("Error loading HTTP client config: %v", err)
+	}
+	manager := secretManager{
+		data: map[string]string{
+			"admin1": "user",
+			"foobar": "pass",
+		},
+	}
+	client, err := NewClientFromConfig(*cfg, "test", WithSecretManager(&manager))
+	if err != nil {
+		t.Fatalf("Error creating HTTP Client: %v", err)
+	}
+
+	rt, ok := client.Transport.(*basicAuthRoundTripper)
+	if !ok {
+		t.Fatalf("Error casting to basic auth transport, %v", client.Transport)
+	}
+
+	if _, err := rt.username.fetch(context.Background()); !strings.Contains(err.Error(), "unknown secret admin") {
+		t.Errorf("Unexpected error message: %s", err)
+	}
+	if _, err := rt.password.fetch(context.Background()); !strings.Contains(err.Error(), "unknown secret pass") {
+		t.Errorf("Unexpected error message: %s", err)
 	}
 }
 
@@ -961,10 +1031,10 @@ func TestBasicUsernameFile(t *testing.T) {
 		t.Fatalf("Error casting to basic auth transport, %v", client.Transport)
 	}
 
-	if username, _ := rt.username.fetch(); username != "testuser" {
+	if username, _ := rt.username.fetch(context.Background()); username != "testuser" {
 		t.Errorf("Bad HTTP client username: %s", username)
 	}
-	if password, _ := rt.password.fetch(); password != "foobar" {
+	if password, _ := rt.password.fetch(context.Background()); password != "foobar" {
 		t.Errorf("Bad HTTP client passwordFile: %s", password)
 	}
 }
